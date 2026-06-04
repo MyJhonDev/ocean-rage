@@ -144,7 +144,7 @@ public class OceanRage {
         }
         direction = direction.normalize();
         Vec3 origin = waterCenter.add(direction.scale(-size.deepOceanOffset));
-        BlockPos originSurface = findWaterSurface(level, (int) Math.round(origin.x), (int) Math.round(origin.z), best.pos.getY());
+        BlockPos originSurface = findWaterSurface(level, floor(origin.x), floor(origin.z), best.pos.getY());
         if (originSurface != null) {
             origin = new Vec3(originSurface.getX() + 0.5D, originSurface.getY(), originSurface.getZ() + 0.5D);
         }
@@ -177,10 +177,32 @@ public class OceanRage {
         return count;
     }
 
-    private record WavePlan(Vec3 origin, Vec3 direction) {
+    private static int floor(double value) {
+        return (int) Math.floor(value);
     }
 
-    private record WaterTarget(BlockPos pos, double score) {
+    private static BlockPos blockAt(Vec3 vec) {
+        return new BlockPos(floor(vec.x), floor(vec.y), floor(vec.z));
+    }
+
+    private static class WavePlan {
+        final Vec3 origin;
+        final Vec3 direction;
+
+        WavePlan(Vec3 origin, Vec3 direction) {
+            this.origin = origin;
+            this.direction = direction;
+        }
+    }
+
+    private static class WaterTarget {
+        final BlockPos pos;
+        final double score;
+
+        WaterTarget(BlockPos pos, double score) {
+            this.pos = pos;
+            this.score = score;
+        }
     }
 
     private enum WaveSize {
@@ -257,10 +279,10 @@ public class OceanRage {
             spawnParticles(center, waveAge);
             if (waveAge == 1) {
                 announce(toxic ? "Uma onda toxica surgiu no horizonte!" : "Uma onda gigante surgiu no horizonte!");
-                level.playSound(null, BlockPos.containing(center), SoundEvents.GENERIC_EXPLODE, SoundSource.WEATHER, 3.0F, 0.35F);
+                level.playSound(null, blockAt(center), SoundEvents.GENERIC_EXPLODE, SoundSource.WEATHER, 3.0F, 0.35F);
             }
             if (waveAge % 80 == 0) {
-                level.playSound(null, BlockPos.containing(center), SoundEvents.LIGHTNING_BOLT_THUNDER, SoundSource.WEATHER, 2.5F, 0.45F);
+                level.playSound(null, blockAt(center), SoundEvents.LIGHTNING_BOLT_THUNDER, SoundSource.WEATHER, 2.5F, 0.45F);
             }
             return false;
         }
@@ -341,7 +363,7 @@ public class OceanRage {
 
         private void createWaveWall(Vec3 center, int waveAge) {
             int half = size.width / 2;
-            int baseY = (int) Math.round(origin.y);
+            int baseY = floor(origin.y);
             int placed = 0;
             for (int forward = -2; forward <= 3; forward++) {
                 Vec3 layerCenter = center.add(direction.scale(forward));
@@ -353,7 +375,7 @@ public class OceanRage {
                             continue;
                         }
                         Vec3 point = layerCenter.add(side.scale(sideways));
-                        BlockPos pos = BlockPos.containing(point.x, baseY + y, point.z);
+                        BlockPos pos = new BlockPos(floor(point.x), baseY + y, floor(point.z));
                         if (canPlaceTemporaryWater(pos)) {
                             level.setBlock(pos, Blocks.WATER.defaultBlockState(), 3);
                             currentWater.add(pos.immutable());
@@ -413,14 +435,16 @@ public class OceanRage {
             int count = toxic ? 180 : 130;
             level.sendParticles(ParticleTypes.SPLASH, center.x, origin.y + size.height * 0.58D, center.z, count, size.width * 0.42D, size.height * 0.24D, 3.0D, 0.28D);
             level.sendParticles(ParticleTypes.CLOUD, center.x, origin.y + size.height * 0.95D, center.z, 95, size.width * 0.35D, 4.0D, 2.5D, 0.06D);
-            level.sendParticles(ParticleTypes.RAIN, center.x, origin.y + size.height + 6.0D, center.z, 160, size.width * 0.45D, 7.0D, 3.0D, 0.25D);
+            level.sendParticles(ParticleTypes.FALLING_WATER, center.x, origin.y + size.height + 6.0D, center.z, 160, size.width * 0.45D, 7.0D, 3.0D, 0.25D);
             if (toxic) {
                 level.sendParticles(ParticleTypes.HAPPY_VILLAGER, center.x, origin.y + size.height * 0.45D, center.z, 85, size.width * 0.32D, size.height * 0.22D, 2.0D, 0.08D);
             }
             if (waveAge % 30 == 0) {
-                BlockPos pos = BlockPos.containing(center.add(side.scale(level.random.nextInt(size.width) - size.width / 2.0D)));
+                double offset = (waveAge * 13) % Math.max(1, size.width) - size.width / 2.0D;
+                Vec3 flash = center.add(side.scale(offset));
+                BlockPos pos = new BlockPos(floor(flash.x), floor(origin.y + size.height + 8.0D), floor(flash.z));
                 level.playSound(null, pos, SoundEvents.LIGHTNING_BOLT_THUNDER, SoundSource.WEATHER, 1.5F, 0.7F);
-                level.sendParticles(ParticleTypes.FLASH, pos.getX(), origin.y + size.height + 8.0D, pos.getZ(), 2, 1.0D, 1.0D, 1.0D, 0.0D);
+                level.sendParticles(ParticleTypes.CLOUD, pos.getX(), pos.getY(), pos.getZ(), 35, 1.5D, 4.0D, 1.5D, 0.03D);
             }
         }
 
