@@ -450,7 +450,10 @@ public class OceanRage {
 
         private void announce(String message) {
             for (ServerPlayer player : level.players()) {
-                if (player.distanceToSqr(focus) < 90000.0D) {
+                double dx = player.getX() - (focus.getX() + 0.5D);
+                double dy = player.getY() - (focus.getY() + 0.5D);
+                double dz = player.getZ() - (focus.getZ() + 0.5D);
+                if (dx * dx + dy * dy + dz * dz < 90000.0D) {
                     player.displayClientMessage(Component.literal("Ocean Rage: " + message), true);
                 }
             }
