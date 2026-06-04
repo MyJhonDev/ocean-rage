@@ -82,20 +82,16 @@ public class OceanRage {
             return 0;
         }
         ServerLevel level = player.serverLevel();
-        Vec3 look = player.getLookAngle();
-        Vec3 horizontal = new Vec3(look.x, 0.0D, look.z);
-        if (horizontal.lengthSqr() < 0.01D) {
-            horizontal = new Vec3(0.0D, 0.0D, 1.0D);
+        WavePlan plan = findWavePlan(level, player, size);
+        if (plan == null) {
+            source.sendFailure(Component.literal("Ocean Rage: nenhuma praia, rio ou oceano encontrado perto de voce."));
+            return 0;
         }
-        Vec3 spawnDirection = horizontal.normalize();
-        Vec3 travelDirection = spawnDirection.scale(-1.0D);
-        BlockPos base = player.blockPosition();
-        Vec3 origin = new Vec3(base.getX() + 0.5D, Math.max(61, base.getY() - 1), base.getZ() + 0.5D).add(spawnDirection.scale(size.spawnDistance));
-        TsunamiWave wave = new TsunamiWave(level, origin, travelDirection, size, toxic);
+        TsunamiWave wave = new TsunamiWave(level, plan.origin, plan.direction, size, toxic, player.blockPosition());
         WAVES.add(wave);
         String type = toxic ? "tsunami toxico" : "tsunami";
-        source.sendSuccess(() -> Component.literal("Ocean Rage: " + type + " iniciado. Olhe para a direcao de onde a onda deve vir."), true);
-        level.playSound(null, player.blockPosition(), SoundEvents.LIGHTNING_BOLT_THUNDER, SoundSource.WEATHER, 2.0F, 0.6F);
+        source.sendSuccess(() -> Component.literal("Ocean Rage: " + type + " iniciado no oceano mais proximo."), true);
+        level.playSound(null, player.blockPosition(), SoundEvents.LIGHTNING_BOLT_THUNDER, SoundSource.WEATHER, 3.0F, 0.5F);
         return 1;
     }
 
@@ -114,27 +110,104 @@ public class OceanRage {
         return 1;
     }
 
+    private static WavePlan findWavePlan(ServerLevel level, ServerPlayer player, WaveSize size) {
+        BlockPos playerPos = player.blockPosition();
+        WaterTarget best = null;
+        int radius = size.searchRadius;
+        for (int x = playerPos.getX() - radius; x <= playerPos.getX() + radius; x += 5) {
+            for (int z = playerPos.getZ() - radius; z <= playerPos.getZ() + radius; z += 5) {
+                BlockPos water = findWaterSurface(level, x, z, playerPos.getY());
+                if (water == null) {
+                    continue;
+                }
+                double dx = water.getX() - playerPos.getX();
+                double dz = water.getZ() - playerPos.getZ();
+                double distance = Math.sqrt(dx * dx + dz * dz);
+                if (distance < 28.0D) {
+                    continue;
+                }
+                int waterScore = countWater(level, water, 12);
+                double score = waterScore * 10.0D + distance * 0.6D;
+                if (best == null || score > best.score) {
+                    best = new WaterTarget(water, score);
+                }
+            }
+        }
+        if (best == null) {
+            return null;
+        }
+        Vec3 waterCenter = new Vec3(best.pos.getX() + 0.5D, best.pos.getY(), best.pos.getZ() + 0.5D);
+        Vec3 playerCenter = new Vec3(playerPos.getX() + 0.5D, playerPos.getY(), playerPos.getZ() + 0.5D);
+        Vec3 direction = new Vec3(playerCenter.x - waterCenter.x, 0.0D, playerCenter.z - waterCenter.z);
+        if (direction.lengthSqr() < 0.01D) {
+            direction = new Vec3(0.0D, 0.0D, 1.0D);
+        }
+        direction = direction.normalize();
+        Vec3 origin = waterCenter.add(direction.scale(-size.deepOceanOffset));
+        BlockPos originSurface = findWaterSurface(level, (int) Math.round(origin.x), (int) Math.round(origin.z), best.pos.getY());
+        if (originSurface != null) {
+            origin = new Vec3(originSurface.getX() + 0.5D, originSurface.getY(), originSurface.getZ() + 0.5D);
+        }
+        return new WavePlan(origin, direction);
+    }
+
+    private static BlockPos findWaterSurface(ServerLevel level, int x, int z, int nearY) {
+        int top = Math.min(level.getMaxBuildHeight() - 2, nearY + 26);
+        int bottom = Math.max(level.getMinBuildHeight() + 2, nearY - 42);
+        for (int y = top; y >= bottom; y--) {
+            BlockPos pos = new BlockPos(x, y, z);
+            if (level.getBlockState(pos).is(Blocks.WATER) && level.getBlockState(pos.above()).isAir()) {
+                return pos.immutable();
+            }
+        }
+        return null;
+    }
+
+    private static int countWater(ServerLevel level, BlockPos center, int radius) {
+        int count = 0;
+        for (int x = -radius; x <= radius; x += 3) {
+            for (int z = -radius; z <= radius; z += 3) {
+                for (int y = -3; y <= 2; y++) {
+                    if (level.getBlockState(center.offset(x, y, z)).is(Blocks.WATER)) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    private record WavePlan(Vec3 origin, Vec3 direction) {
+    }
+
+    private record WaterTarget(BlockPos pos, double score) {
+    }
+
     private enum WaveSize {
-        SMALL(9, 21, 48, 0.75D, 36, 4.0F, 1.0D),
-        MEDIUM(14, 33, 64, 0.65D, 48, 6.0F, 1.45D),
-        GIANT(22, 51, 88, 0.55D, 60, 9.0F, 2.0D);
+        SMALL(14, 55, 220, 0.28D, 85, 90, 4.0F, 1.0D, 650),
+        MEDIUM(24, 85, 340, 0.22D, 140, 130, 6.0F, 1.45D, 950),
+        GIANT(36, 135, 520, 0.16D, 220, 185, 9.0F, 2.0D, 1350);
 
         final int height;
         final int width;
         final int lifetime;
         final double speed;
-        final int spawnDistance;
+        final int drainRadius;
+        final int searchRadius;
         final float damage;
         final double push;
+        final int deepOceanOffset;
 
-        WaveSize(int height, int width, int lifetime, double speed, int spawnDistance, float damage, double push) {
+        WaveSize(int height, int width, int lifetime, double speed, int drainRadius, int searchRadius, float damage, double push, int deepOceanOffset) {
             this.height = height;
             this.width = width;
             this.lifetime = lifetime;
             this.speed = speed;
-            this.spawnDistance = spawnDistance;
+            this.drainRadius = drainRadius;
+            this.searchRadius = searchRadius;
             this.damage = damage;
             this.push = push;
+            this.deepOceanOffset = deepOceanOffset;
         }
     }
 
@@ -145,42 +218,49 @@ public class OceanRage {
         private final Vec3 side;
         private final WaveSize size;
         private final boolean toxic;
+        private final BlockPos focus;
         private final Set<BlockPos> currentWater = new HashSet<>();
         private final Map<BlockPos, BlockState> recededWater = new HashMap<>();
         private int age;
+        private int drainCursorX;
+        private int drainCursorZ;
 
-        TsunamiWave(ServerLevel level, Vec3 origin, Vec3 direction, WaveSize size, boolean toxic) {
+        TsunamiWave(ServerLevel level, Vec3 origin, Vec3 direction, WaveSize size, boolean toxic, BlockPos focus) {
             this.level = level;
             this.origin = origin;
             this.direction = direction.normalize();
             this.side = new Vec3(-this.direction.z, 0.0D, this.direction.x).normalize();
             this.size = size;
             this.toxic = toxic;
+            this.focus = focus.immutable();
+            this.drainCursorX = -size.drainRadius;
+            this.drainCursorZ = -size.drainRadius;
         }
 
         boolean tick() {
             age++;
-            if (age <= 42) {
-                recedeWater();
-                if (age % 10 == 0) {
-                    announce("O mar esta recuando...");
-                }
+            if (age <= 150) {
+                drainSea();
+                warningStage();
                 return false;
             }
             clearCurrentWater();
-            int waveAge = age - 42;
+            int waveAge = age - 150;
             if (waveAge > size.lifetime) {
                 clearAll();
-                announce("A onda perdeu forca.");
+                announce("A onda se afastou.");
                 return true;
             }
             Vec3 center = origin.add(direction.scale(waveAge * size.speed));
-            createWaveWall(center);
+            createWaveWall(center, waveAge);
             affectEntities(center);
-            spawnParticles(center);
+            spawnParticles(center, waveAge);
             if (waveAge == 1) {
-                announce(toxic ? "Uma onda toxica esta vindo!" : "Uma onda gigante esta vindo!");
-                level.playSound(null, BlockPos.containing(center), SoundEvents.GENERIC_EXPLODE, SoundSource.WEATHER, 2.0F, 0.45F);
+                announce(toxic ? "Uma onda toxica surgiu no horizonte!" : "Uma onda gigante surgiu no horizonte!");
+                level.playSound(null, BlockPos.containing(center), SoundEvents.GENERIC_EXPLODE, SoundSource.WEATHER, 3.0F, 0.35F);
+            }
+            if (waveAge % 80 == 0) {
+                level.playSound(null, BlockPos.containing(center), SoundEvents.LIGHTNING_BOLT_THUNDER, SoundSource.WEATHER, 2.5F, 0.45F);
             }
             return false;
         }
@@ -195,53 +275,93 @@ public class OceanRage {
             recededWater.clear();
         }
 
-        private void recedeWater() {
-            if (age % 3 != 0) {
-                return;
+        private void warningStage() {
+            if (age == 5) {
+                announce("O oceano comecou a recuar.");
             }
-            int radius = size.width / 2;
-            int length = 24;
+            if (age == 60) {
+                announce("A praia esta secando rapido.");
+            }
+            if (age == 120) {
+                announce("Algo enorme esta se formando no mar.");
+            }
+            if (age % 35 == 0) {
+                level.playSound(null, focus, SoundEvents.LIGHTNING_BOLT_THUNDER, SoundSource.WEATHER, 1.8F, 0.55F);
+            }
+            if (age % 8 == 0) {
+                level.sendParticles(ParticleTypes.CLOUD, focus.getX() + 0.5D, focus.getY() + 8.0D, focus.getZ() + 0.5D, 90, size.drainRadius * 0.65D, 6.0D, size.drainRadius * 0.65D, 0.05D);
+            }
+        }
+
+        private void drainSea() {
             int removed = 0;
-            for (int forward = -length; forward <= length; forward++) {
-                for (int sideways = -radius; sideways <= radius; sideways += 2) {
-                    Vec3 point = origin.add(direction.scale(forward)).add(side.scale(sideways));
-                    BlockPos pos = BlockPos.containing(point.x, origin.y, point.z);
-                    for (int dy = -2; dy <= 1; dy++) {
-                        BlockPos target = pos.offset(0, dy, 0);
-                        BlockState state = level.getBlockState(target);
-                        if (state.is(Blocks.WATER) && !recededWater.containsKey(target)) {
-                            recededWater.put(target.immutable(), state);
-                            level.setBlock(target, Blocks.AIR.defaultBlockState(), 3);
-                            removed++;
-                            if (removed > 180) {
-                                return;
-                            }
-                        }
-                    }
+            int radius = size.drainRadius;
+            while (removed < 520) {
+                if (drainCursorX > radius) {
+                    drainCursorX = -radius;
+                    drainCursorZ += 3;
+                }
+                if (drainCursorZ > radius) {
+                    drainCursorZ = -radius;
+                    drainCursorX = -radius;
+                    return;
+                }
+                int x = drainCursorX;
+                int z = drainCursorZ;
+                drainCursorX += 3;
+                if (x * x + z * z > radius * radius) {
+                    continue;
+                }
+                BlockPos surface = findWaterSurface(level, focus.getX() + x, focus.getZ() + z, focus.getY());
+                if (surface == null) {
+                    continue;
+                }
+                if (removeWaterColumn(surface)) {
+                    removed++;
                 }
             }
         }
 
-        private void createWaveWall(Vec3 center) {
+        private boolean removeWaterColumn(BlockPos surface) {
+            boolean changed = false;
+            for (int y = 0; y >= -4; y--) {
+                BlockPos target = surface.offset(0, y, 0);
+                BlockState state = level.getBlockState(target);
+                if (state.is(Blocks.WATER) && !recededWater.containsKey(target)) {
+                    recededWater.put(target.immutable(), state);
+                    level.setBlock(target, Blocks.AIR.defaultBlockState(), 3);
+                    changed = true;
+                }
+            }
+            if (changed && age % 4 == 0) {
+                level.sendParticles(ParticleTypes.SPLASH, surface.getX() + 0.5D, surface.getY() + 0.2D, surface.getZ() + 0.5D, 5, 0.5D, 0.1D, 0.5D, 0.15D);
+            }
+            return changed;
+        }
+
+        private void createWaveWall(Vec3 center, int waveAge) {
             int half = size.width / 2;
             int baseY = (int) Math.round(origin.y);
             int placed = 0;
-            for (int sideways = -half; sideways <= half; sideways++) {
-                for (int y = 0; y < size.height; y++) {
-                    int curve = Math.abs(sideways) / 7;
-                    int realHeight = size.height - curve;
-                    if (y > realHeight) {
-                        continue;
-                    }
-                    Vec3 point = center.add(side.scale(sideways));
-                    BlockPos pos = BlockPos.containing(point.x, baseY + y, point.z);
-                    if (canPlaceTemporaryWater(pos)) {
-                        level.setBlock(pos, Blocks.WATER.defaultBlockState(), 3);
-                        currentWater.add(pos.immutable());
-                        placed++;
-                    }
-                    if (placed > 1600) {
-                        return;
+            for (int forward = -2; forward <= 3; forward++) {
+                Vec3 layerCenter = center.add(direction.scale(forward));
+                for (int sideways = -half; sideways <= half; sideways++) {
+                    int edgeCurve = Math.abs(sideways) / 7;
+                    int realHeight = Math.max(5, size.height - edgeCurve);
+                    for (int y = 0; y <= realHeight; y++) {
+                        if (y > realHeight - 4 && (sideways + y + waveAge) % 3 == 0) {
+                            continue;
+                        }
+                        Vec3 point = layerCenter.add(side.scale(sideways));
+                        BlockPos pos = BlockPos.containing(point.x, baseY + y, point.z);
+                        if (canPlaceTemporaryWater(pos)) {
+                            level.setBlock(pos, Blocks.WATER.defaultBlockState(), 3);
+                            currentWater.add(pos.immutable());
+                            placed++;
+                        }
+                        if (placed > 6200) {
+                            return;
+                        }
                     }
                 }
             }
@@ -249,11 +369,11 @@ public class OceanRage {
 
         private boolean canPlaceTemporaryWater(BlockPos pos) {
             BlockState state = level.getBlockState(pos);
-            if (state.isAir()) {
+            if (state.isAir() || state.is(Blocks.WATER)) {
                 return true;
             }
             Block block = state.getBlock();
-            return block == Blocks.GRASS || block == Blocks.TALL_GRASS || block == Blocks.FERN || block == Blocks.LARGE_FERN || block == Blocks.DEAD_BUSH || block == Blocks.SEAGRASS || block == Blocks.KELP || block == Blocks.KELP_PLANT;
+            return block == Blocks.GRASS || block == Blocks.TALL_GRASS || block == Blocks.FERN || block == Blocks.LARGE_FERN || block == Blocks.DEAD_BUSH || block == Blocks.SEAGRASS || block == Blocks.KELP || block == Blocks.KELP_PLANT || block == Blocks.SNOW;
         }
 
         private void clearCurrentWater() {
@@ -267,39 +387,46 @@ public class OceanRage {
         }
 
         private void affectEntities(Vec3 center) {
-            AABB box = new AABB(center.x - size.width, origin.y - 4, center.z - size.width, center.x + size.width, origin.y + size.height + 6, center.z + size.width);
+            AABB box = new AABB(center.x - size.width, origin.y - 8, center.z - size.width, center.x + size.width, origin.y + size.height + 10, center.z + size.width);
             List<Entity> entities = level.getEntities(null, box);
             for (Entity entity : entities) {
                 if (!(entity instanceof LivingEntity living)) {
                     continue;
                 }
-                double distanceSide = Math.abs(entity.position().subtract(center).dot(side));
-                double distanceFront = Math.abs(entity.position().subtract(center).dot(direction));
-                if (distanceSide > size.width / 2.0D + 3.0D || distanceFront > 5.0D) {
+                Vec3 relative = entity.position().subtract(center);
+                double distanceSide = Math.abs(relative.dot(side));
+                double distanceFront = Math.abs(relative.dot(direction));
+                if (distanceSide > size.width / 2.0D + 8.0D || distanceFront > 11.0D) {
                     continue;
                 }
-                entity.push(direction.x * size.push, 0.45D, direction.z * size.push);
+                entity.push(direction.x * size.push, 0.32D, direction.z * size.push);
                 living.hurt(level.damageSources().generic(), toxic ? size.damage + 3.0F : size.damage);
-                living.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, 80, toxic ? 2 : 0));
+                living.addEffect(new MobEffectInstance(MobEffects.MOVEMENT_SLOWDOWN, 100, toxic ? 2 : 0));
                 if (toxic) {
-                    living.addEffect(new MobEffectInstance(MobEffects.POISON, 120, 1));
-                    living.addEffect(new MobEffectInstance(MobEffects.CONFUSION, 100, 0));
+                    living.addEffect(new MobEffectInstance(MobEffects.POISON, 140, 1));
+                    living.addEffect(new MobEffectInstance(MobEffects.CONFUSION, 120, 0));
                 }
             }
         }
 
-        private void spawnParticles(Vec3 center) {
-            int count = toxic ? 100 : 70;
-            level.sendParticles(ParticleTypes.SPLASH, center.x, origin.y + size.height * 0.65D, center.z, count, size.width * 0.35D, size.height * 0.25D, 1.5D, 0.35D);
-            level.sendParticles(ParticleTypes.CLOUD, center.x, origin.y + size.height * 0.95D, center.z, 35, size.width * 0.28D, 2.0D, 1.0D, 0.07D);
+        private void spawnParticles(Vec3 center, int waveAge) {
+            int count = toxic ? 180 : 130;
+            level.sendParticles(ParticleTypes.SPLASH, center.x, origin.y + size.height * 0.58D, center.z, count, size.width * 0.42D, size.height * 0.24D, 3.0D, 0.28D);
+            level.sendParticles(ParticleTypes.CLOUD, center.x, origin.y + size.height * 0.95D, center.z, 95, size.width * 0.35D, 4.0D, 2.5D, 0.06D);
+            level.sendParticles(ParticleTypes.RAIN, center.x, origin.y + size.height + 6.0D, center.z, 160, size.width * 0.45D, 7.0D, 3.0D, 0.25D);
             if (toxic) {
-                level.sendParticles(ParticleTypes.HAPPY_VILLAGER, center.x, origin.y + size.height * 0.45D, center.z, 45, size.width * 0.28D, size.height * 0.2D, 1.2D, 0.08D);
+                level.sendParticles(ParticleTypes.HAPPY_VILLAGER, center.x, origin.y + size.height * 0.45D, center.z, 85, size.width * 0.32D, size.height * 0.22D, 2.0D, 0.08D);
+            }
+            if (waveAge % 30 == 0) {
+                BlockPos pos = BlockPos.containing(center.add(side.scale(level.random.nextInt(size.width) - size.width / 2.0D)));
+                level.playSound(null, pos, SoundEvents.LIGHTNING_BOLT_THUNDER, SoundSource.WEATHER, 1.5F, 0.7F);
+                level.sendParticles(ParticleTypes.FLASH, pos.getX(), origin.y + size.height + 8.0D, pos.getZ(), 2, 1.0D, 1.0D, 1.0D, 0.0D);
             }
         }
 
         private void announce(String message) {
             for (ServerPlayer player : level.players()) {
-                if (player.distanceToSqr(origin) < 22000.0D) {
+                if (player.distanceToSqr(focus) < 90000.0D) {
                     player.displayClientMessage(Component.literal("Ocean Rage: " + message), true);
                 }
             }
